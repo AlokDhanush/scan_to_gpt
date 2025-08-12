@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Image Text Extractor</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; }
+    h1 { margin-top: 0; }
+    .container { display: grid; gap: 24px; grid-template-columns: 1fr; }
+    @media (min-width: 900px) { .container { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid #ccc; border-radius: 10px; padding: 16px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    button { padding: 10px 14px; border-radius: 8px; border: 1px solid #888; background: #f3f3f3; cursor: pointer;}
+    button.primary { background: #2563eb; color: white; border-color: #1d4ed8; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .hidden {display: none !important;}
+    video, canvas, img { max-width: 100%; border-radius: 8px; border: 1px solid #ccc; }
+    .stack { display: grid; gap: 10px; }
+    .status { font-size: 0.95rem; opacity: 0.85; }
+    #btnTake { background: #2563eb; color: white; border-color: #1d4ed8;}
+    #btnRetake {  background: #2563eb; color: white; border-color: #1d4ed8;}
+    #btnSwitchCam { background: #2563eb; color: white; border-color: #1d4ed8;}
+    textarea { width: 100%; min-height: 320px; padding: 10px; border-radius: 8px; border: 1px solid #ccc; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .mirror { transform: scaleX(-1); }
+  </style>
+</head>
+<body>
+  <h1>Extract Text from Image</h1>
+  <div class="container">
+    <div class="card stack">
+      <h2>Upload an image</h2>
+      <form class="stack" method="POST" action="/" enctype="multipart/form-data">
+        <input type="file" name="image" accept="image/*" required />
+        <div class="row">
+          <button type="submit" class="primary">Extract Text</button>
+        </div>
+      </form>
+
+      <hr />
+
+      <h2>Or capture from camera</h2>
+      <div class="stack">
+        <div class="row">
+          <button id="btnStart" class="primary">Capture image</button>
+          <button id="btnSwitchCam" class="hidden">Use front camera</button>
+          <button id="btnTake" class="hidden">Take picture</button>
+          <button id="btnRetake" class="hidden">Retake</button>
+          <button id="btnExtract" class="hidden primary">Extract Text</button>
+        </div>
+        <div id="cameraArea" class="stack hidden">
+          <video id="video" autoplay playsinline></video>
+          <canvas id="canvas" class="hidden"></canvas>
+          <img id="snapshot" class="hidden" alt="Captured image" />
+          <div id="status" class="status"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Extracted Text</h2>
+      <textarea id="result" readonly placeholder="The extracted text will appear here...">{{ text or '' }}</textarea>
+      <form method="POST" action="/paste" class="row" style="margin-top:10px;">
+        <button type="submit" class="primary">Paste last extracted to ChatGPT</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const btnStart = document.getElementById('btnStart');
+    const btnTake = document.getElementById('btnTake');
+    const btnRetake = document.getElementById('btnRetake');
+    const btnExtract = document.getElementById('btnExtract');
+    const btnSwitchCam = document.getElementById('btnSwitchCam');
+    const cameraArea = document.getElementById('cameraArea');
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const snapshot = document.getElementById('snapshot');
+    const statusEl = document.getElementById('status');
+    const result = document.getElementById('result');
+
+    let mediaStream = null;
+    let lastDataUrl = null;
+    let useFrontCamera = false; // toggles between front(user) and back(environment)
+
+    function show(el) { el.classList.remove('hidden'); }
+    function hide(el) { el.classList.add('hidden'); }
+    function setStatus(text) { statusEl.textContent = text || ''; }
+    function stopStream() {
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(t => t.stop());
+        mediaStream = null;
+      }
+    }
+
+    async function startStream() {
+      setStatus('Requesting camera...');
+      stopStream();
+      const facingMode = useFrontCamera ? 'user' : 'environment';
+      mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode }, audio: false });
+      video.srcObject = mediaStream;
+      // Mirror preview only for front camera
+      if (useFrontCamera) video.classList.add('mirror'); else video.classList.remove('mirror');
+      btnSwitchCam.textContent = useFrontCamera ? 'Use back camera' : 'Use front camera';
+      setStatus(`Camera ready (${useFrontCamera ? 'front' : 'back'}). Position your document and click "Take picture".`);
+    }
+
+    btnStart.addEventListener('click', async () => {
+      try {
+        hide(btnStart);
+        show(btnTake);
+        hide(btnRetake);
+        hide(btnExtract);
+        show(btnSwitchCam);
+        show(cameraArea);
+        hide(canvas);
+        hide(snapshot);
+        await startStream();
+      } catch (err) {
+        setStatus('Failed to access camera: ' + err);
+        hide(btnTake);
+        hide(btnSwitchCam);
+        show(btnStart);
+      }
+    });
+
+    btnSwitchCam.addEventListener('click', async () => {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+      try {
+        useFrontCamera = !useFrontCamera;
+        await startStream();
+      } catch (err) {
+        setStatus('Failed to switch camera: ' + err);
+      }
+    });
+
+    btnTake.addEventListener('click', () => {
+      if (!mediaStream) return;
+      const track = mediaStream.getVideoTracks()[0];
+      const settings = track.getSettings();
+      const width = settings.width || video.videoWidth;
+      const height = settings.height || video.videoHeight;
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, width, height);
+      lastDataUrl = canvas.toDataURL('image/png');
+      snapshot.src = lastDataUrl;
+      show(snapshot);
+      show(btnExtract);
+      show(btnRetake);
+      hide(btnTake);
+      hide(video);
+      hide(btnSwitchCam);
+      hide(canvas);
+      setStatus('Picture captured. You can Retake or Extract Text.');
+    });
+
+    btnRetake.addEventListener('click', () => {
+      if (!mediaStream) return;
+      hide(snapshot);
+      hide(btnExtract);
+      show(btnTake);
+      show(video);
+      show(btnSwitchCam);
+      hide(canvas);
+      setStatus('Retake: Adjust and take the picture again.');
+    });
+
+    btnExtract.addEventListener('click', async () => {
+      if (!lastDataUrl) return;
+      setStatus('Extracting text...');
+      btnExtract.disabled = true;
+      try {
+        const resp = await fetch('/capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ imageData: lastDataUrl })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data && data.error || 'Extraction failed');
+        result.value = data.text || '';
+        setStatus('Done.');
+      } catch (e) {
+        setStatus('Error: ' + e.message);
+      } finally {
+        btnExtract.disabled = false;
+      }
+    });
+
+    window.addEventListener('beforeunload', stopStream);
+  </script>
+</body>
+</html>
